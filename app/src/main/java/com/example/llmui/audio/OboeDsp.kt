@@ -1,4 +1,4 @@
-Ôªøpackage com.example.llmui.audio
+package com.example.llmui.audio
 
 import android.util.Log
 import com.example.lowlatencymonitor.audio.AudioEngine
@@ -10,7 +10,7 @@ import com.example.lowlatencymonitor.audio.AudioEngine
  */
 object OboeDsp {
 
-    // UWAGA: u≈ºywamy tego samego TAG-a co C++ -> zobaczysz to w logach razem z "Started SR=..."
+    // UWAGA: uøywamy tego samego TAG-a co C++ -> zobaczysz to w logach razem z "Started SR=..."
     private const val TAG = "AudioEngine"
 
     private const val GAIN_PARAM_GAIN = 0
@@ -131,7 +131,7 @@ object OboeDsp {
     }
 
     fun setTestToneEnabled(enabled: Boolean) {
-        // brak generatora tonu ‚Äì no-op
+        // brak generatora tonu ñ no-op
     }
 
     fun setMicPreset(preset: MicDspPreset) {
@@ -144,7 +144,7 @@ object OboeDsp {
     // ========== FAF API ==========
 
     /**
-     * 1.0 = brak zmiany, <1 ni≈ºej, >1 wy≈ºej (0.8..1.2)
+     * 1.0 = brak zmiany, <1 niøej, >1 wyøej (0.8..1.2)
      */
     fun setFafPitchRatio(ratio: Float) {
         val clamped = ratio.coerceIn(0.8f, 1.2f)
@@ -156,7 +156,7 @@ object OboeDsp {
     }
 
     /**
-     * 0.0 = tylko normalny g≈Ços, 1.0 = tylko FAF.
+     * 0.0 = tylko normalny g≥os, 1.0 = tylko FAF.
      */
     fun setFafMix(mix: Float) {
         val clamped = mix.coerceIn(0f, 1f)
