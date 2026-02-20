@@ -10,17 +10,27 @@
 #include <atomic>
 #include <mutex>
 #include <functional>
+#include <cmath>
+#include <algorithm>
 
 class InputCallback : public oboe::AudioStreamCallback {
 public:
-    explicit InputCallback(RingBuffer& rb) : mRing(rb) {}
+    explicit InputCallback(RingBuffer& rb, std::atomic<float>& levelMeter) : mRing(rb), mLevelMeter(levelMeter) {}
     oboe::DataCallbackResult onAudioReady(oboe::AudioStream* stream, void* audioData, int32_t numFrames) override {
         float* in = static_cast<float*>(audioData);
+        float peak = 0.0f;
+        const int sampleCount = numFrames * stream->getChannelCount();
+        for (int i = 0; i < sampleCount; ++i) {
+            peak = std::max(peak, std::fabs(in[i]));
+        }
+        float smoothed = mLevelMeter.load() * 0.8f + peak * 0.2f;
+        mLevelMeter.store(smoothed);
         mRing.write(in, static_cast<size_t>(numFrames * stream->getChannelCount()));
         return oboe::DataCallbackResult::Continue;
     }
 private:
     RingBuffer& mRing;
+    std::atomic<float>& mLevelMeter;
 };
 
 class OutputCallback : public oboe::AudioStreamCallback {
@@ -71,6 +81,8 @@ struct AudioEngineImpl {
     std::mutex startStopMutex;
 
     int32_t sampleRate = 48000;
+    std::atomic<float> inputLevel { 0.0f };
+    std::atomic<int32_t> preferredInputDeviceId { -1 };
 
     AudioEngineImpl();
 
@@ -80,6 +92,8 @@ struct AudioEngineImpl {
     void clearChain();
     int  addNode(const char* type);
     void setParam(int index, int paramId, float value);
+    float getInputLevel() const;
+    void setPreferredInputDeviceId(int32_t deviceId);
 
 private:
     void restartAsync();
