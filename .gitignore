@@ -1,0 +1,64 @@
+﻿# ==== Android / Gradle ====
+.gradle/
+**/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+**/.cxx/
+*.apk
+*.aab
+*.iml
+.idea/
+*.log
+
+# ==== Kotlin/Java ====
+*.class
+
+# ==== NDK / CMake / Ninja ====
+**/obj/
+**/.ninja*
+**/CMakeFiles/
+**/cmake-build-*/
+**/out/
+
+# ==== OS ====
+.DS_Store
+Thumbs.db
+
+# ==== Keystore / secrets ====
+*.jks
+*.keystore
+key.properties
+
+# ==== fastlane (jeśli masz) ====
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+
+# ==== audio dumps / huge assets (opcjonalnie) ====
+# *.wav
+# *.pcm
+
+# ==== JVM / Android Studio dumps ====
+*.hprof
+hs_err_pid*.log
+replay_pid*.log
+
+# ==== Android Studio / IntelliJ ====
+.idea/
+*.iml
+
+# ==== Gradle / build outputs ====
+.gradle/
+**/build/
+local.properties
+.externalNativeBuild/
+.cxx/
+**/.cxx/
+
+# ==== APK/AAB ====
+*.apk
+*.aab
+

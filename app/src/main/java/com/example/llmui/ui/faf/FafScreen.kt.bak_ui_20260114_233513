@@ -1,0 +1,324 @@
+﻿package com.example.llmui.ui.faf
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.example.llmui.audio.OboeDsp
+import kotlin.math.pow
+import kotlin.math.roundToInt
+
+private enum class FafPreset {
+    SOFT, CLASSIC, STRONG
+}
+
+@Composable
+fun FafScreen() {
+    var fafEnabled by rememberSaveable { mutableStateOf(false) }
+    var pitchSemitones by rememberSaveable { mutableStateOf(0f) }   // -8 .. +8
+    var mix by rememberSaveable { mutableStateOf(1f) }              // 0..1
+    var currentPreset by rememberSaveable { mutableStateOf<FafPreset?>(null) }
+
+    // start/stop silnika + wyłączamy DAF
+    LaunchedEffect(fafEnabled) {
+        try {
+            if (fafEnabled) {
+                OboeDsp.start()
+                OboeDsp.setFeedbackMode(false)
+                OboeDsp.setDelayMs(0)
+                OboeDsp.setFafMix(mix)
+                OboeDsp.setFafPitchRatio(semitonesToRatio(pitchSemitones))
+            } else {
+                OboeDsp.setFafMix(0f)
+                OboeDsp.setFafPitchRatio(1f)
+                OboeDsp.stop()
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    // zmiany sliderów
+    LaunchedEffect(pitchSemitones, mix, fafEnabled) {
+        if (!fafEnabled) return@LaunchedEffect
+        try {
+            OboeDsp.setFafPitchRatio(semitonesToRatio(pitchSemitones))
+            OboeDsp.setFafMix(mix)
+        } catch (_: Throwable) {
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "FAF – Frequency Altered Feedback",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Dziecko słyszy swój głos z przesuniętą wysokością. " +
+                            "Najlepiej używać razem ze słuchawkami przewodowymi, podobnie jak w DAF.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+
+                // Włącznik FAF
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f, fill = true),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "FAF – zmiana wysokości głosu",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Włącz, gdy dziecko jest już oswojone z DAF. " +
+                                    "FAF dodatkowo „odkleja” głos od ciała.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = fafEnabled,
+                        onCheckedChange = { checked ->
+                            fafEnabled = checked
+                            if (!checked) currentPreset = null
+                        }
+                    )
+                }
+
+                Divider()
+
+                // Pitch
+                Text(
+                    text = "Przesunięcie wysokości (półtony)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Ujemne wartości = głos niższy, dodatnie = wyższy. " +
+                            "Zakres ±8 półtonów daje wyraźny efekt, ale nadal naturalny.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Slider(
+                        value = pitchSemitones,
+                        onValueChange = {
+                            pitchSemitones = it
+                            currentPreset = null
+                        },
+                        valueRange = -8f..8f,
+                        steps = 15,
+                        modifier = Modifier.weight(1f, fill = true),
+                        enabled = fafEnabled,
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(0.dp))
+                    Text(
+                        text = "${pitchSemitones.roundToInt()} st",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                Divider()
+
+                // Mix
+                Text(
+                    text = "Miks FAF",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "0% = zwykły głos, 100% = tylko głos przekształcony.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Slider(
+                        value = mix,
+                        onValueChange = {
+                            mix = it
+                            currentPreset = null
+                        },
+                        valueRange = 0f..1f,
+                        steps = 9,
+                        modifier = Modifier.weight(1f, fill = true),
+                        enabled = fafEnabled,
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                    Text(
+                        text = "${(mix * 100).roundToInt()}%",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                Divider()
+
+                // Presety
+                Text(
+                    text = "Presety FAF",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Gotowe ustawienia pitch + miks. Działają tylko gdy FAF jest włączony.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+
+                FafPresetButton(
+                    label = "Łagodny",
+                    description = "Delikatnie niższy głos, dobry na start.",
+                    selected = currentPreset == FafPreset.SOFT,
+                    enabled = fafEnabled
+                ) {
+                    pitchSemitones = -4f
+                    mix = 0.7f
+                    currentPreset = FafPreset.SOFT
+                }
+
+                FafPresetButton(
+                    label = "Klasyczny",
+                    description = "Wyraźne obniżenie, typowy efekt FAF.",
+                    selected = currentPreset == FafPreset.CLASSIC,
+                    enabled = fafEnabled
+                ) {
+                    pitchSemitones = -7f
+                    mix = 0.9f
+                    currentPreset = FafPreset.CLASSIC
+                }
+
+                FafPresetButton(
+                    label = "Mocny",
+                    description = "Mocno przetworzony głos – krótkie sesje.",
+                    selected = currentPreset == FafPreset.STRONG,
+                    enabled = fafEnabled
+                ) {
+                    pitchSemitones = 8f
+                    mix = 1.0f
+                    currentPreset = FafPreset.STRONG
+                }
+            }
+        }
+    }
+}
+
+private fun semitonesToRatio(st: Float): Float {
+    // 0.6 .. 1.5 (pasuje do ograniczeń w OboeDsp / C++)
+    val r = 2f.pow(st / 12f)
+    return r.coerceIn(0.6f, 1.5f)
+}
+
+@Composable
+private fun FafPresetButton(
+    label: String,
+    description: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+        colors = if (selected) {
+            ButtonDefaults.buttonColors()
+        } else {
+            ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = if (selected) "$label  ✓" else label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+}

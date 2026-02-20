@@ -1,0 +1,389 @@
+﻿package com.example.llmui.ui.daf
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import com.example.llmui.audio.OboeDsp
+import kotlin.math.roundToInt
+
+@Composable
+fun DafScreen() {
+    var delayMs by rememberSaveable { mutableStateOf(120f) }
+    var gain by rememberSaveable { mutableStateOf(1.1f) }
+    var feedbackEnabled by rememberSaveable { mutableStateOf(true) }
+    var muteEnabled by rememberSaveable { mutableStateOf(false) }
+    var lastDelayBeforeMute by rememberSaveable { mutableStateOf(120f) }
+
+    // Silnik audio działa gdy ekran DAF jest w hierarchii
+    LaunchedEffect(Unit) {
+        try { OboeDsp.start() } catch (_: Throwable) { }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            try { OboeDsp.stop() } catch (_: Throwable) { }
+        }
+    }
+
+    // Aktualizacja parametrów DAF
+    LaunchedEffect(delayMs, gain, feedbackEnabled, muteEnabled) {
+        val realDelay = if (muteEnabled || !feedbackEnabled) 0 else delayMs.roundToInt()
+        try {
+            OboeDsp.setDelayMs(realDelay)
+            OboeDsp.setGain(gain)
+            OboeDsp.setFeedbackMode(feedbackEnabled && !muteEnabled)
+        } catch (_: Throwable) {
+        }
+    }
+
+    // LED bar (na razie na podstawie gain)
+    val ledLevel =
+        if (feedbackEnabled && !muteEnabled) (gain / 2f).coerceIn(0f, 1f)
+        else 0f
+
+    val ledStatusText = when {
+        !feedbackEnabled -> "DAF wyłączony"
+        muteEnabled -> "Mute – bez opóźnienia"
+        ledLevel < 0.25f -> "Delikatny odsłuch"
+        ledLevel < 0.6f -> "Komfortowy poziom"
+        else -> "Uwaga: może być głośno"
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // GÓRNY NAGŁÓWEK + MIC LED
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "Tryb DAF – Delayed Auditory Feedback",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Ustaw delikatne opóźnienie i głośność. Efekt ma być tłem – głos dziecka nadal jest na pierwszym planie.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .padding(start = 12.dp)
+                        .width(72.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "MIC",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    MicLevelBar(
+                        level = ledLevel,
+                        modifier = Modifier
+                            .height(52.dp)
+                            .width(14.dp)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = ledStatusText,
+                        style = MaterialTheme.typography.labelSmall,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+
+        // BLOK DAF: delay, preset, gain, feedback, mute
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Delay
+                Text(
+                    text = "Opóźnienie DAF (ms)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Typowy zakres terapeutyczny: 70–200 ms. Zacznij od najmniejszych wartości.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Slider(
+                        value = delayMs,
+                        onValueChange = {
+                            delayMs = it
+                            if (!muteEnabled && it > 0f) {
+                                lastDelayBeforeMute = it
+                            }
+                        },
+                        valueRange = 0f..300f,
+                        steps = 300 / 5 - 1,
+                        modifier = Modifier.weight(1f),
+                        enabled = !muteEnabled
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = delayMs.roundToInt().toString() + " ms",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                // Preset DAF
+                TextButton(
+                    onClick = {
+                        delayMs = 80f
+                        gain = 1.2f
+                        if (!muteEnabled && delayMs > 0f) {
+                            lastDelayBeforeMute = delayMs
+                        }
+                    }
+                ) {
+                    Text(
+                        text = "Ustaw preset: 80 ms, 1.2×",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                Divider()
+
+                // Gain
+                Text(
+                    text = "Głośność / wzmocnienie DAF",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Dopasuj tak, żeby dziecko dobrze słyszało własny głos, ale bez przesterów i dyskomfortu.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Slider(
+                        value = gain,
+                        onValueChange = { gain = it },
+                        valueRange = 0.4f..2.0f,
+                        steps = 8,
+                        modifier = Modifier.weight(1f),
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = String.format("%.1f×", gain),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                Divider()
+
+                // Feedback
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "Feedback (odsłuch własnego głosu)",
+                            style = MaterialTheme.typography.titleSmall
+                        )
+                        Text(
+                            text = "Po włączeniu słyszysz własny głos z opóźnieniem. Używaj tylko na słuchawkach przewodowych.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = feedbackEnabled,
+                        onCheckedChange = { checked ->
+                            feedbackEnabled = checked
+                            if (feedbackEnabled && muteEnabled) {
+                                muteEnabled = false
+                                if (delayMs <= 0f) {
+                                    delayMs = lastDelayBeforeMute
+                                }
+                            }
+                        }
+                    )
+                }
+
+                // Mute
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "Mute DAF (bez opóźnienia)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Po włączeniu efekt DAF jest wyłączony (0 ms), ale tor audio w słuchawkach pozostaje aktywny.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = muteEnabled,
+                        onCheckedChange = { enabled ->
+                            if (enabled) {
+                                if (delayMs > 0f) {
+                                    lastDelayBeforeMute = delayMs
+                                }
+                                muteEnabled = true
+                            } else {
+                                muteEnabled = false
+                                if (lastDelayBeforeMute <= 0f) {
+                                    lastDelayBeforeMute = 120f
+                                }
+                                delayMs = lastDelayBeforeMute
+                            }
+                        }
+                    )
+                }
+            }
+        }
+
+        // Skrót ćwiczeń
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Ćwiczenia DAF (skrót)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "• Czytanie sylab / rymów – wolne tempo, krótkie rzędy \"pa-ta-ka\", \"ma-na-la\".\n" +
+                            "• Krótkie zdania z pauzami – np. opis dnia w tempie „slow motion”.\n" +
+                            "• Dialogi w rolach – sklep, lekarz, plac zabaw – przygotowanie do realnych sytuacji.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    text = "Pełne scenariusze i wyniki znajdziesz w zakładkach Ćwiczenia i Wyniki.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MicLevelBar(
+    level: Float,
+    modifier: Modifier = Modifier
+) {
+    val norm = level.coerceIn(0f, 1f)
+    val segments = 6
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        for (i in (segments - 1) downTo 0) {
+            val threshold = (i + 1).toFloat() / segments.toFloat()
+            val isActive = norm >= threshold
+
+            val color = when {
+                !isActive -> MaterialTheme.colorScheme.surface.copy(alpha = 0.4f)
+                norm < 0.25f -> MaterialTheme.colorScheme.secondary
+                norm < 0.6f -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.error
+            }
+
+            Box(
+                modifier = Modifier
+                    .width(14.dp)
+                    .height(6.dp)
+                    .background(
+                        color = color,
+                        shape = RoundedCornerShape(3.dp)
+                    )
+            )
+        }
+    }
+}

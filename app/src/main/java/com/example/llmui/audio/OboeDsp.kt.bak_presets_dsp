@@ -1,0 +1,174 @@
+﻿package com.example.llmui.audio
+
+import com.example.lowlatencymonitor.audio.AudioEngine
+
+/**
+ * DAF oparty o AudioEngine (Oboe) z LowLatencyMonitor.
+ *
+ * Krok 1 DSP:
+ *  - presety mikrofonu modyfikują tylko gain i mix DAF (bez zmian w C++).
+ */
+object OboeDsp {
+
+    private const val GAIN_PARAM_GAIN = 0
+    private const val DELAY_PARAM_TIME_MS = 0
+    private const val DELAY_PARAM_FEEDBACK = 1
+    private const val DELAY_PARAM_MIX = 2
+
+    private var started = false
+    private var gainNode = -1
+    private var delayNode = -1
+
+    // Gain ustawiany z UI (slider)
+    private var userGain = 1.0f
+
+    // Preset DSP mikrofonu (tylko Kotlin)
+    private var micPreset: MicDspPreset = MicDspPreset.SMOOTH
+
+    private var currentDelayMs = 0
+    private var feedbackEnabled = false
+
+    // Efektywny gain = gain z UI * korekcja presetu
+    private val effectiveGain: Float
+        get() {
+            val factor = when (micPreset) {
+                MicDspPreset.NEUTRAL -> 1.0f
+                MicDspPreset.SMOOTH -> 1.05f
+                MicDspPreset.DYNAMIC -> 1.12f
+            }
+            return (userGain * factor).coerceIn(0f, 2f)
+        }
+
+    fun start(): Boolean {
+        if (started) return true
+        return try {
+            AudioEngine.start()
+            AudioEngine.clearChain()
+
+            // GAIN
+            gainNode = AudioEngine.addNode("gain")
+            if (gainNode >= 0) {
+                AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, effectiveGain)
+            }
+
+            // DELAY (DAF)
+            delayNode = AudioEngine.addNode("delay")
+            if (delayNode >= 0) {
+                AudioEngine.setParam(
+                    delayNode,
+                    DELAY_PARAM_TIME_MS,
+                    currentDelayMs.toFloat()
+                )
+                applyDelayMix()
+            }
+
+            started = true
+            true
+        } catch (_: Throwable) {
+            started = false
+            false
+        }
+    }
+
+    fun stop() {
+        if (!started) return
+        try {
+            AudioEngine.stop()
+        } catch (_: Throwable) {
+        } finally {
+            started = false
+        }
+    }
+
+    fun setDelayMs(value: Int) {
+        val clampedUi = value.coerceIn(0, 300)
+        currentDelayMs = clampedUi
+
+        if (delayNode >= 0) {
+            AudioEngine.setParam(
+                delayNode,
+                DELAY_PARAM_TIME_MS,
+                currentDelayMs.toFloat()
+            )
+            applyDelayMix()
+        }
+    }
+
+    fun getMinDelayMs(): Int = 0
+
+    fun getRingDelayMs(): Int = currentDelayMs
+
+    fun setGain(g: Float) {
+        val clamped = g.coerceIn(0f, 2f)
+        userGain = clamped
+        try {
+            updateGainNode()
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun getGain(): Float = userGain
+
+    fun setMicPreset(preset: MicDspPreset) {
+        micPreset = preset
+        try {
+            updateGainNode()
+            applyDelayMix()
+        } catch (_: Throwable) {
+        }
+    }
+
+    fun setFeedbackMode(enabled: Boolean) {
+        feedbackEnabled = enabled
+        applyDelayMix()
+    }
+
+    fun setTestToneEnabled(enabled: Boolean) {
+        // brak generatora test-tone w tym silniku – no-op
+    }
+
+    // --- Prywatne ---
+
+    private fun updateGainNode() {
+        if (gainNode >= 0) {
+            AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, effectiveGain)
+        }
+    }
+
+    private fun baseMixForPreset(): Float {
+        // bazowo ~0.6, drobne różnice między presetami
+        val base = 0.6f
+        val factor = when (micPreset) {
+            MicDspPreset.NEUTRAL -> 0.9f     // subtelniej
+            MicDspPreset.SMOOTH -> 1.0f      // aktualne „lubiane” ustawienie
+            MicDspPreset.DYNAMIC -> 1.1f     // odrobinę mocniej
+        }
+        return (base * factor).coerceIn(0.4f, 0.8f)
+    }
+
+    private fun applyDelayMix() {
+        if (delayNode < 0) return
+
+        if (!feedbackEnabled || currentDelayMs <= 0) {
+            // DAF wyłączony
+            AudioEngine.setParam(delayNode, DELAY_PARAM_FEEDBACK, 0f)
+            AudioEngine.setParam(delayNode, DELAY_PARAM_MIX, 0f)
+            return
+        }
+
+        // Przy włączonym DAF zawężamy zakres do 60–220 ms
+        val effectiveMs = currentDelayMs.coerceIn(60, 220)
+        AudioEngine.setParam(
+            delayNode,
+            DELAY_PARAM_TIME_MS,
+            effectiveMs.toFloat()
+        )
+
+        // Bez feedbacku (brak wielokrotnego echa)
+        val fb = 0.0f
+        val mix = baseMixForPreset()
+
+        AudioEngine.setParam(delayNode, DELAY_PARAM_FEEDBACK, fb)
+        AudioEngine.setParam(delayNode, DELAY_PARAM_MIX, mix)
+    }
+}

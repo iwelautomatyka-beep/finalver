@@ -1,0 +1,78 @@
+﻿diff --git a/app/src/main/java/com/example/llmui/ui/daf/DafScreen.kt b/app/src/main/java/com/example/llmui/ui/daf/DafScreen.kt
+index 0000000..1111111 100644
+--- a/app/src/main/java/com/example/llmui/ui/daf/DafScreen.kt
++++ b/app/src/main/java/com/example/llmui/ui/daf/DafScreen.kt
+@@ -13,11 +13,11 @@ import androidx.compose.foundation.layout.height
+ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.layout.width
+ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material3.Card
+ import androidx.compose.material3.CardDefaults
+ import androidx.compose.material3.Divider
+ import androidx.compose.material3.MaterialTheme
+ import androidx.compose.material3.Slider
+ import androidx.compose.material3.SliderDefaults
+ import androidx.compose.material3.Switch
+ import androidx.compose.material3.Text
+-import androidx.compose.material3.TextButton
++import androidx.compose.material3.Button
+@@ -133,26 +133,6 @@ fun DafScreen() {
+                     )
+                 }
+ 
+-                Row(
+-                    modifier = Modifier.fillMaxWidth(),
+-                    horizontalArrangement = Arrangement.SpaceBetween,
+-                    verticalAlignment = Alignment.CenterVertically
+-                ) {
+-                    Column(
+-                        modifier = Modifier.weight(1f),
+-                        verticalArrangement = Arrangement.spacedBy(2.dp)
+-                    ) {
+-                        Text(
+-                            text = "Test tone (sygnał kontrolny)",
+-                            style = MaterialTheme.typography.titleSmall
+-                        )
+-                        Text(
+-                            text = "Stały ton do sprawdzenia toru słuchawki ↔ aplikacja przed pracą z głosem.",
+-                            style = MaterialTheme.typography.bodySmall
+-                        )
+-                    }
+-                    Switch(
+-                        checked = testToneEnabled,
+-                        onCheckedChange = { testToneEnabled = it }
+-                    )
+-                }
+-
+                 // MUTE – do komunikacji terapeuty
+                 Row(
+                     modifier = Modifier.fillMaxWidth(),
+@@ -171,15 +151,16 @@ fun DafScreen() {
+                             text = "Wyłącza efekt DAF (opóźnienie=0), tak aby terapeuta mógł swobodnie mówić do dziecka bez echa.",
+                             style = MaterialTheme.typography.bodySmall
+                         )
+                     }
+-                    TextButton(
++                    Button(
+                         onClick = {
+                             if (!muteEnabled) {
+                                 if (delayMs > 0f) {
+                                     lastDelayBeforeMute = delayMs
+                                 }
+                                 muteEnabled = true
+                             } else {
+                                 muteEnabled = false
+                                 if (lastDelayBeforeMute <= 0f) {
+                                     lastDelayBeforeMute = 120f
+                                 }
+                                 delayMs = lastDelayBeforeMute
+-                            }
+-                        }
++                            }
++                        },
++                        modifier = Modifier.height(48.dp)
+                     ) {
+                         Text(
+                             text = if (muteEnabled) "Wyłącz mute" else "Włącz mute"
+                         )
+                     }

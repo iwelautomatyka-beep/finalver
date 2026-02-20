@@ -1,0 +1,134 @@
+﻿package com.example.llmui.audio
+
+import com.example.lowlatencymonitor.audio.AudioEngine
+
+/**
+ * DAF oparty o AudioEngine (Oboe) z LowLatencyMonitor.
+ *
+ * Założenia:
+ *  - 0 ms  = DAF wyłączony (mix=0, fb=0),
+ *  - 60–220 ms = użyteczny zakres DAF, bez feedbacku (fb=0), mix ~0.6,
+ *  - brak limitera i brak dodatkowego boostera głośności – tak jak w wersji,
+ *    którą oceniałeś jako „bardzo dobrą”.
+ */
+object OboeDsp {
+
+    private const val GAIN_PARAM_GAIN = 0
+    private const val DELAY_PARAM_TIME_MS = 0
+    private const val DELAY_PARAM_FEEDBACK = 1
+    private const val DELAY_PARAM_MIX = 2
+
+    private var started = false
+    private var gainNode = -1
+    private var delayNode = -1
+
+    private var currentGain = 1.0f
+    private var currentDelayMs = 0
+    private var feedbackEnabled = false
+
+    fun start(): Boolean {
+        if (started) return true
+        return try {
+            AudioEngine.start()
+            AudioEngine.clearChain()
+
+            // GAIN
+            gainNode = AudioEngine.addNode("gain")
+            if (gainNode >= 0) {
+                AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, currentGain)
+            }
+
+            // DELAY (DAF)
+            delayNode = AudioEngine.addNode("delay")
+            if (delayNode >= 0) {
+                AudioEngine.setParam(
+                    delayNode,
+                    DELAY_PARAM_TIME_MS,
+                    currentDelayMs.toFloat()
+                )
+                applyDelayMix()
+            }
+
+            started = true
+            true
+        } catch (_: Throwable) {
+            started = false
+            false
+        }
+    }
+
+    fun stop() {
+        if (!started) return
+        try {
+            AudioEngine.stop()
+        } catch (_: Throwable) {
+        } finally {
+            started = false
+        }
+    }
+
+    fun setDelayMs(value: Int) {
+        val clampedUi = value.coerceIn(0, 300)
+        currentDelayMs = clampedUi
+
+        if (delayNode >= 0) {
+            AudioEngine.setParam(
+                delayNode,
+                DELAY_PARAM_TIME_MS,
+                currentDelayMs.toFloat()
+            )
+            applyDelayMix()
+        }
+    }
+
+    fun getMinDelayMs(): Int = 0
+
+    fun getRingDelayMs(): Int = currentDelayMs
+
+    fun setGain(g: Float) {
+        val clamped = g.coerceIn(0f, 2f)
+        currentGain = clamped
+        if (gainNode >= 0) {
+            AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, clamped)
+        }
+    }
+
+    fun getGain(): Float = currentGain
+
+    fun setFeedbackMode(enabled: Boolean) {
+        feedbackEnabled = enabled
+        applyDelayMix()
+    }
+
+    fun setTestToneEnabled(enabled: Boolean) {
+        // brak osobnego generatora tonu w tym silniku – zostawiamy no-op
+    }
+
+    // --- Prywatne ---
+
+    private fun applyDelayMix() {
+        if (delayNode < 0) return
+
+        if (!feedbackEnabled || currentDelayMs <= 0) {
+            // DAF wyłączony
+            AudioEngine.setParam(delayNode, DELAY_PARAM_FEEDBACK, 0f)
+            AudioEngine.setParam(delayNode, DELAY_PARAM_MIX, 0f)
+            return
+        }
+
+        // Przy włączonym DAF zawężamy zakres do 60–220 ms
+        val effectiveMs = currentDelayMs.coerceIn(60, 220)
+        AudioEngine.setParam(
+            delayNode,
+            DELAY_PARAM_TIME_MS,
+            effectiveMs.toFloat()
+        )
+
+        // Bez feedbacku (brak wielokrotnego echa), dość mocny, ale nie 100% mix.
+        val fb = 0.0f
+        val mix = 0.6f
+
+        AudioEngine.setParam(delayNode, DELAY_PARAM_FEEDBACK, fb)
+        AudioEngine.setParam(delayNode, DELAY_PARAM_MIX, mix)
+    }
+}

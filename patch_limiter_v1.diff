@@ -1,0 +1,134 @@
+cd "C:\Users\Janek\Desktop\FluencyCoach"
+
+@'
+diff --git a/app/src/main/cpp/dsp/limiter.h b/app/src/main/cpp/dsp/limiter.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/app/src/main/cpp/dsp/limiter.h
+@@ -0,0 +1,92 @@
++#pragma once
++
++#include "dsp_base.h"
++#include <atomic>
++#include <algorithm>
++#include <cmath>
++
++enum {
++    LIMITER_PARAM_THRESHOLD = 0,
++    LIMITER_PARAM_RATIO     = 1
++};
++
++/**
++ * Prosty limiter:
++ * - dziala na sygnale [-1..1]
++ * - powyzej progowego poziomu kompresuje sygnal z zadana ratio (np. 4:1)
++ * - na koncu pilnuje twardego clipu [-1..1]
++ *
++ * Cel: przy krzyku / glosnych spolgloskach sciac szczyty,
++ * ale zostawic naturalne brzmienie.
++ */
++class LimiterNode : public DspNode {
++public:
++    const char* name() const override { return "limiter"; }
++
++    void setParam(int id, float value) override {
++        if (id == LIMITER_PARAM_THRESHOLD) {
++            float v = std::clamp(value, 0.1f, 1.0f);
++            threshold_.store(v);
++        } else if (id == LIMITER_PARAM_RATIO) {
++            float v = std::max(1.0f, value);
++            ratio_.store(v);
++        }
++    }
++
++    void process(float* interleaved, int32_t numFrames) override {
++        const int ch = ctx_.channels;
++        if (ch <= 0) return;
++
++        const float thr      = threshold_.load();
++        const float ratio    = ratio_.load();
++        const float invRatio = (ratio <= 1.0f) ? 1.0f : (1.0f / ratio);
++
++        const int count = numFrames * ch;
++        for (int i = 0; i < count; ++i) {
++            float x = interleaved[i];
++            float a = std::fabs(x);
++
++            if (a > thr) {
++                const float sign = (x >= 0.0f) ? 1.0f : -1.0f;
++                const float over = a - thr;
++                float compressed = thr + over * invRatio;
++                x = sign * compressed;
++            }
++
++            if (x > 1.0f) x = 1.0f;
++            else if (x < -1.0f) x = -1.0f;
++
++            interleaved[i] = x;
++        }
++    }
++
++private:
++    std::atomic<float> threshold_{0.9f}; // start: tuz pod 0 dBFS
++    std::atomic<float> ratio_{4.0f};     // lagodny limiter 4:1
++};
++
+diff --git a/app/src/main/cpp/core/audio_engine.h b/app/src/main/cpp/core/audio_engine.h
+index 1111111..2222222 100644
+--- a/app/src/main/cpp/core/audio_engine.h
++++ b/app/src/main/cpp/core/audio_engine.h
+@@ -1,7 +1,8 @@
+ #pragma once
+ 
+ #include "../dsp/dsp_registry.h"
+ #include "../dsp/gain.h"
+ #include "../dsp/delay.h"
++#include "../dsp/limiter.h"
+ 
+ class AudioEngineImpl {
+ public:
+diff --git a/app/src/main/cpp/core/audio_engine.cpp b/app/src/main/cpp/core/audio_engine.cpp
+index 1111111..2222222 100644
+--- a/app/src/main/cpp/core/audio_engine.cpp
++++ b/app/src/main/cpp/core/audio_engine.cpp
+@@ -1,8 +1,11 @@
+ #include "audio_engine.h"
+ 
+ AudioEngineImpl::AudioEngineImpl() {
+     registry.registerFactory("gain", []{ return std::make_unique<GainNode>(); });
+     registry.registerFactory("delay", []{ return std::make_unique<DelayNode>(); });
++    // Limiter na koncu lancucha, jako bezpiecznik przed clippingiem
++    registry.registerFactory("limiter", []{ return std::make_unique<LimiterNode>(); });
+ }
+ 
+diff --git a/app/src/main/java/com/example/llmui/audio/OboeDsp.kt b/app/src/main/java/com/example/llmui/audio/OboeDsp.kt
+index 1111111..2222222 100644
+--- a/app/src/main/java/com/example/llmui/audio/OboeDsp.kt
++++ b/app/src/main/java/com/example/llmui/audio/OboeDsp.kt
+@@ -1,10 +1,13 @@
+ package com.example.llmui.audio
+ 
+ object OboeDsp {
+@@ -15,7 +18,8 @@ object OboeDsp {
+ 
+-    private var gainNode: Int = -1
+-    private var delayNode: Int = -1
++    private var gainNode: Int = -1
++    private var delayNode: Int = -1
++    private var limiterNode: Int = -1
+@@ -80,9 +84,11 @@ object OboeDsp {
+-        AudioEngine.resetGraph()
+-
+-        gainNode = AudioEngine.addNode("gain")
+-        delayNode = AudioEngine.addNode("delay")
++        AudioEngine.resetGraph()
++
++        gainNode = AudioEngine.addNode("gain")
++        delayNode = AudioEngine.addNode("delay")
++        limiterNode = AudioEngine.addNode("limiter")
+ 
+         currentGain = initialGain
+         AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, currentGain)
+         applyDelayMix()
+'@ | Set-Content "patch_limiter_v1.diff" -Encoding UTF8

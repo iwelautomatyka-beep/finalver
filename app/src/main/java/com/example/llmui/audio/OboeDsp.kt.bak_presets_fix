@@ -1,0 +1,185 @@
+﻿package com.example.llmui.audio
+
+import com.example.lowlatencymonitor.audio.AudioEngine
+
+/**
+ * DAF oparty o AudioEngine (Oboe) z LowLatencyMonitor.
+ *
+ * Założenia:
+ *  - 0 ms  = DAF wyłączony (mix=0, fb=0),
+ *  - 60–220 ms = użyteczny zakres DAF,
+ *  - presety MicDspPreset zmieniają charakter miksu (mix / feedback) –
+ *    czyli faktycznie inny „kolor” DAF.
+ */
+object OboeDsp {
+
+    private const val GAIN_PARAM_GAIN = 0
+    private const val DELAY_PARAM_TIME_MS = 0
+    private const val DELAY_PARAM_FEEDBACK = 1
+    private const val DELAY_PARAM_MIX = 2
+
+    private var started = false
+    private var gainNode = -1
+    private var delayNode = -1
+
+    private var currentGain = 1.0f
+    private var currentDelayMs = 0
+    private var feedbackEnabled = false
+
+    // aktualny preset DSP dla mikrofonu / DAF
+    private var currentMicPreset: MicDspPreset = MicDspPreset.SMOOTH
+
+    fun start(): Boolean {
+        if (started) return true
+        return try {
+            AudioEngine.start()
+            AudioEngine.clearChain()
+
+            // GAIN
+            gainNode = AudioEngine.addNode("gain")
+            if (gainNode >= 0) {
+                AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, currentGain)
+            }
+
+            // DELAY (DAF)
+            delayNode = AudioEngine.addNode("delay")
+            if (delayNode >= 0) {
+                AudioEngine.setParam(
+                    delayNode,
+                    DELAY_PARAM_TIME_MS,
+                    currentDelayMs.toFloat()
+                )
+                applyDelayMix()
+            }
+
+            started = true
+            true
+        } catch (_: Throwable) {
+            started = false
+            false
+        }
+    }
+
+    fun stop() {
+        if (!started) return
+        try {
+            AudioEngine.stop()
+        } catch (_: Throwable) {
+        } finally {
+            started = false
+        }
+    }
+
+    fun setDelayMs(value: Int) {
+        val clampedUi = value.coerceIn(0, 300)
+        currentDelayMs = clampedUi
+
+        if (delayNode >= 0) {
+            AudioEngine.setParam(
+                delayNode,
+                DELAY_PARAM_TIME_MS,
+                currentDelayMs.toFloat()
+            )
+            applyDelayMix()
+        }
+    }
+
+    fun getMinDelayMs(): Int = 0
+
+    fun getRingDelayMs(): Int = currentDelayMs
+
+    fun setGain(g: Float) {
+        val clamped = g.coerceIn(0f, 2f)
+        currentGain = clamped
+        if (gainNode >= 0) {
+            AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, clamped)
+        }
+    }
+
+    fun getGain(): Float = currentGain
+
+    fun setFeedbackMode(enabled: Boolean) {
+        feedbackEnabled = enabled
+        applyDelayMix()
+    }
+
+    fun setTestToneEnabled(enabled: Boolean) {
+        // brak osobnego generatora tonu w tym silniku – no-op
+    }
+
+    /**
+     * Ustawienie presetu DSP – używane przez DafScreen.
+     *
+     * Preset wpływa na to:
+     *  - jak mocno słychać „echo” (mix),
+     *  - czy efekt jest bardziej neutralny / jasny / stonowany.
+     */
+    fun setMicPreset(preset: MicDspPreset) {
+        currentMicPreset = preset
+        applyDelayMix()
+    }
+
+    // --- Prywatne ---
+
+    private fun applyDelayMix() {
+        if (delayNode < 0) return
+
+        if (!feedbackEnabled || currentDelayMs <= 0) {
+            // DAF wyłączony
+            AudioEngine.setParam(delayNode, DELAY_PARAM_FEEDBACK, 0f)
+            AudioEngine.setParam(delayNode, DELAY_PARAM_MIX, 0f)
+            return
+        }
+
+        // Przy włączonym DAF zawężamy zakres do 60–220 ms
+        val effectiveMs = currentDelayMs.coerceIn(60, 220)
+        AudioEngine.setParam(
+            delayNode,
+            DELAY_PARAM_TIME_MS,
+            effectiveMs.toFloat()
+        )
+
+        // Parametry zależne od presetu
+        val (fb, mix) = when (currentMicPreset) {
+            MicDspPreset.SMOOTH -> {
+                // delikatny, bardziej „wtopiony” efekt
+                0.0f to 0.55f
+            }
+            MicDspPreset.BRIGHT -> {
+                // wyraźniejsze DAF, bardziej „szklane”
+                0.0f to 0.70f
+            }
+            MicDspPreset.SOFTCUT -> {
+                // spokojniejsze, mniej narzucające się echo
+                0.0f to 0.45f
+            }
+        }
+
+        AudioEngine.setParam(delayNode, DELAY_PARAM_FEEDBACK, fb)
+        AudioEngine.setParam(delayNode, DELAY_PARAM_MIX, mix)
+    }
+}
+
+/**
+ * Presety DSP dla DAF – używane w UI (DafScreen) oraz w OboeDsp.
+ *
+ * Na razie różnicujemy głównie „moc” efektu (mix), w przyszłości
+ * możemy to rozszerzyć o dodatkowe węzły EQ / kompresora po stronie C++.
+ */
+enum class MicDspPreset(
+    val uiLabel: String,
+    val uiDescription: String
+) {
+    SMOOTH(
+        uiLabel = "Smooth",
+        uiDescription = "Delikatne, wygładzone brzmienie. DAF miesza się z głosem, nie dominuje."
+    ),
+    BRIGHT(
+        uiLabel = "Bright",
+        uiDescription = "Wyraźniejszy efekt DAF, bardziej „jasny”, pomocny gdy dziecko słabo reaguje."
+    ),
+    SOFTCUT(
+        uiLabel = "Soft cut",
+        uiDescription = "Spokojniejsze, bardziej przytłumione echo – dobre przy wrażliwych uszach."
+    );
+}

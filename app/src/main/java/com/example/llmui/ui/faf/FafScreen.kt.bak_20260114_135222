@@ -1,0 +1,221 @@
+﻿package com.example.llmui.ui.faf
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import com.example.llmui.audio.OboeDsp
+
+enum class FafPreset {
+    SOFT,
+    STANDARD,
+    STRONG
+}
+
+@Composable
+fun FafScreen() {
+    var fafEnabled by rememberSaveable { mutableStateOf(false) }
+    var currentPreset by rememberSaveable { mutableStateOf(FafPreset.STANDARD) }
+
+    // Start / zatrzymanie efektu
+    LaunchedEffect(fafEnabled) {
+        try {
+            if (fafEnabled) {
+                OboeDsp.start()
+            } else {
+                // wyłączamy efekt (bez zatrzymywania silnika na siłę)
+                OboeDsp.setFeedbackMode(false)
+                OboeDsp.setDelayMs(0)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    // Proste presety FAF – na razie korzystają z tego samego silnika co DAF
+    LaunchedEffect(fafEnabled, currentPreset) {
+        if (!fafEnabled) return@LaunchedEffect
+        try {
+            val (delayMs, gain) = when (currentPreset) {
+                FafPreset.SOFT -> 60 to 0.9f
+                FafPreset.STANDARD -> 80 to 1.0f
+                FafPreset.STRONG -> 110 to 1.1f
+            }
+            OboeDsp.setDelayMs(delayMs)
+            OboeDsp.setGain(gain)
+            OboeDsp.setFeedbackMode(true)
+        } catch (_: Throwable) {
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "FAF – Frequency Altered Feedback",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Eksperymentalny tryb odsłuchu. Docelowo głos będzie nie tylko opóźniony (jak w DAF), ale też lekko \"przestrojony\" i przefiltrowany.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Text(
+                    text = "Na razie FAF korzysta z tego samego silnika co DAF – to wstępny etap przed dodaniem prawdziwej zmiany wysokości dźwięku i filtrów.",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Light
+                )
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "FAF – odsłuch eksperymentalny",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Włączaj tylko na słuchawkach przewodowych. Zakres opóźnienia ok. 60–110 ms, zbliżony do użytecznego terapeutycznie.",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = fafEnabled,
+                        onCheckedChange = { fafEnabled = it }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Tryby FAF",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FafPresetButton(
+                        label = "Łagodny",
+                        isSelected = currentPreset == FafPreset.SOFT,
+                        onClick = { currentPreset = FafPreset.SOFT },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FafPresetButton(
+                        label = "Standard",
+                        isSelected = currentPreset == FafPreset.STANDARD,
+                        onClick = { currentPreset = FafPreset.STANDARD },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FafPresetButton(
+                        label = "Mocny",
+                        isSelected = currentPreset == FafPreset.STRONG,
+                        onClick = { currentPreset = FafPreset.STRONG },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                val infoText = when (currentPreset) {
+                    FafPreset.SOFT -> "Łagodny: krótsze opóźnienie (~60 ms), delikatny efekt – dobre na start."
+                    FafPreset.STANDARD -> "Standard: ok. 80 ms – zbliżone do typowego ustawienia terapeutycznego."
+                    FafPreset.STRONG -> "Mocny: ok. 110 ms – bardzo wyraźny efekt, do krótkich prób."
+                }
+
+                Text(
+                    text = infoText,
+                    style = MaterialTheme.typography.bodySmall,
+                    textAlign = TextAlign.Start
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FafPresetButton(
+    label: String,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val colors = if (isSelected) {
+        ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
+        )
+    } else {
+        ButtonDefaults.buttonColors()
+    }
+
+    Button(
+        onClick = onClick,
+        modifier = modifier.height(40.dp),
+        colors = colors
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelLarge
+        )
+    }
+}

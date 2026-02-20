@@ -1,0 +1,905 @@
+﻿===============================
+FILE: app\src\main\cpp\audio_engine.cpp
+===============================
+
+
+
+===============================
+FILE: app\src\main\cpp\faf_pitch_node.cpp
+===============================
+
+#include "faf_pitch_node.h"
+#include <cmath>
+#include <algorithm>
+
+static float clampf(float v, float lo, float hi) {
+    return std::max(lo, std::min(hi, v));
+}
+
+void FafPitchNode::prepare(const DspContext& ctx) {
+    sampleRate = ctx.sampleRate;
+    channels   = ctx.channels;
+    allocateRing();
+
+    ringWrite = 0;
+    ringRead  = 0.0f;
+}
+
+void FafPitchNode::allocateRing() {
+    const float maxSeconds = 0.4f; // ~400 ms bufora
+    ringFrames = static_cast<int32_t>(sampleRate * maxSeconds);
+    if (ringFrames < 1) ringFrames = 1;
+
+    ring.assign(static_cast<size_t>(ringFrames * channels), 0.0f);
+}
+
+void FafPitchNode::setParam(int id, float value) {
+    switch (id) {
+        case PARAM_PITCH_RATIO:
+            // typowo 0.8..1.2 (~±4 półtony)
+            pitchRatio = clampf(value, 0.8f, 1.2f);
+            break;
+        case PARAM_MIX:
+            mix = clampf(value, 0.0f, 1.0f);
+            break;
+        default:
+            break;
+    }
+}
+
+void FafPitchNode::process(float* buffer, int32_t numFrames) {
+    const int32_t numChannels = channels;
+
+    if (!buffer || numChannels <= 0) return;
+    if (ringFrames <= 0 || ring.empty()) return;
+
+    // Zawsze karmimy ring, żeby po włączeniu nie było skoku
+    for (int32_t i = 0; i < numFrames; ++i) {
+        const int32_t baseRingIdx = (ringWrite * numChannels) % (ringFrames * numChannels);
+        const int32_t baseBufIdx  = i * numChannels;
+
+        for (int c = 0; c < numChannels; ++c) {
+            ring[baseRingIdx + c] = buffer[baseBufIdx + c];
+        }
+
+        ringWrite = (ringWrite + 1) % ringFrames;
+    }
+
+    // Jeśli miks ~0 lub ratio == 1.0 -> bypass (tylko zapis do ring)
+    if (mix <= 0.001f || pitchRatio == 1.0f) {
+        return;
+    }
+
+    // Pitch-shift przez resampling z bufora kołowego
+    for (int32_t i = 0; i < numFrames; ++i) {
+        const int32_t inIdx = i * numChannels;
+
+        int32_t readFrame0 = static_cast<int32_t>(ringRead);
+        float   frac       = ringRead - static_cast<float>(readFrame0);
+
+        if (readFrame0 >= ringFrames) {
+            readFrame0 %= ringFrames;
+        }
+        int32_t readFrame1 = readFrame0 + 1;
+        if (readFrame1 >= ringFrames) readFrame1 -= ringFrames;
+
+        const int32_t ringBase0 = (readFrame0 * numChannels) % (ringFrames * numChannels);
+        const int32_t ringBase1 = (readFrame1 * numChannels) % (ringFrames * numChannels);
+
+        for (int c = 0; c < numChannels; ++c) {
+            float s0 = ring[ringBase0 + c];
+            float s1 = ring[ringBase1 + c];
+            float shifted = s0 + (s1 - s0) * frac;
+
+            float dry = buffer[inIdx + c];
+            float wet = shifted;
+
+            buffer[inIdx + c] = dry * (1.0f - mix) + wet * mix;
+        }
+
+        ringRead += pitchRatio;
+        if (ringRead >= static_cast<float>(ringFrames)) {
+            ringRead -= static_cast<float>(ringFrames);
+        }
+    }
+}
+
+===============================
+FILE: app\src\main\cpp\faf_pitch_node.h
+===============================
+
+#pragma once
+
+#include "audio_engine.h"
+#include <vector>
+#include <cstdint>
+#include <algorithm>
+
+class FafPitchNode : public DspNode {
+public:
+    enum ParamId {
+        PARAM_PITCH_RATIO = 0, // 1.0 = brak zmiany
+        PARAM_MIX         = 1  // 0.0 = dry, 1.0 = tylko FAF
+    };
+
+    FafPitchNode() = default;
+    ~FafPitchNode() override = default;
+
+    void prepare(const DspContext& ctx) override;
+    void setParam(int id, float value) override;
+
+    // Podpis zgodny z dsp_base.h:
+    // virtual void process(float* interleaved, int32_t frames) = 0;
+    void process(float* buffer, int32_t numFrames) override;
+
+private:
+    int   sampleRate = 48000;
+    int   channels   = 1;
+
+    float pitchRatio = 1.0f;
+    float mix        = 0.0f;
+
+    std::vector<float> ring;
+    int32_t ringFrames = 0;
+    int32_t ringWrite  = 0;
+    float   ringRead   = 0.0f;
+
+    void allocateRing();
+};
+
+===============================
+FILE: app\src\main\java\com\example\llmui\audio\OboeDsp.kt
+===============================
+
+package com.example.llmui.audio
+
+import com.example.lowlatencymonitor.audio.AudioEngine
+
+/**
+ * DAF oparty o AudioEngine (Oboe) z LowLatencyMonitor.
+ *
+ * Założenia:
+ *  - 0 ms  = DAF wyłączony (mix=0, fb=0),
+ *  - 60–220 ms = użyteczny zakres DAF,
+ *  - presety MicDspPreset (NEUTRAL, SMOOTH, DYNAMIC) zmieniają charakter miksu i głośność.
+ */
+object OboeDsp {
+
+    private const val GAIN_PARAM_GAIN = 0
+    private const val DELAY_PARAM_TIME_MS = 0
+    private const val DELAY_PARAM_FEEDBACK = 1
+    private const val DELAY_PARAM_MIX = 2
+    private const val FAF_PARAM_PITCH_RATIO = 0
+    private const val FAF_PARAM_MIX = 1
+
+    private var started = false
+    private var gainNode = -1
+    private var delayNode = -1
+
+    private var currentGain = 1.0f
+    private var currentDelayMs = 0
+    private var feedbackEnabled = false
+
+    // aktualny preset DSP (enum jest w MicDspPreset.kt)
+    private var currentMicPreset: MicDspPreset = MicDspPreset.NEUTRAL
+
+    private var fafNode = -1
+    private var fafPitchRatio = 1.0f
+    private var fafMix = 0.0f
+
+    fun start(): Boolean {
+        if (started) return true
+        return try {
+            AudioEngine.start()
+            AudioEngine.clearChain()
+
+            // GAIN
+            gainNode = AudioEngine.addNode("gain")
+            if (gainNode >= 0) {
+                AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, currentGain)
+            }
+
+            // DELAY (DAF)
+            delayNode = AudioEngine.addNode("delay")
+            if (delayNode >= 0) {
+                AudioEngine.setParam(
+                    delayNode,
+                    DELAY_PARAM_TIME_MS,
+                    currentDelayMs.toFloat()
+                )
+                applyDelayMix()
+            }
+
+            // FAF pitch node (true FAF)
+            fafNode = AudioEngine.addNode("faf_pitch")
+            if (fafNode >= 0) {
+                AudioEngine.setParam(fafNode, FAF_PARAM_PITCH_RATIO, fafPitchRatio)
+                AudioEngine.setParam(fafNode, FAF_PARAM_MIX, fafMix)
+            }
+
+            started = true
+            true
+        } catch (_: Throwable) {
+            started = false
+            false
+        }
+    }
+
+    fun stop() {
+        if (!started) return
+        try {
+            AudioEngine.stop()
+        } catch (_: Throwable) {
+        } finally {
+            started = false
+        }
+    }
+
+    fun setDelayMs(value: Int) {
+        val clampedUi = value.coerceIn(0, 300)
+        currentDelayMs = clampedUi
+
+        if (delayNode >= 0) {
+            AudioEngine.setParam(
+                delayNode,
+                DELAY_PARAM_TIME_MS,
+                currentDelayMs.toFloat()
+            )
+            applyDelayMix()
+        }
+    }
+
+    fun getMinDelayMs(): Int = 0
+
+    fun getRingDelayMs(): Int = currentDelayMs
+
+    fun setGain(g: Float) {
+        val clamped = g.coerceIn(0f, 2f)
+        currentGain = clamped
+        if (gainNode >= 0) {
+            AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, clamped)
+        }
+    }
+
+    fun getGain(): Float = currentGain
+
+    fun setFeedbackMode(enabled: Boolean) {
+        feedbackEnabled = enabled
+        applyDelayMix()
+    }
+
+    fun setTestToneEnabled(enabled: Boolean) {
+        // brak osobnego generatora tonu w tym silniku – no-op
+    }
+
+    /**
+     * Ustawienie presetu DSP – wywoływane z DafScreen.
+     * Każdy preset ustawia swój typowy GAIN + charakter miksu.
+     */
+    fun setMicPreset(preset: MicDspPreset) {
+        currentMicPreset = preset
+        applyMicPresetGain()
+        applyDelayMix()
+    }
+
+    // --- Prywatne ---
+
+    private fun applyMicPresetGain() {
+        // wyraźne różnice głośności, ale wciąż w bezpiecznym zakresie
+        val targetGain = when (currentMicPreset) {
+            MicDspPreset.NEUTRAL -> 1.0f   // bazowy, jak „stara dobra” wersja
+            MicDspPreset.SMOOTH  -> 0.8f   // trochę ciszej, łagodniej
+            MicDspPreset.DYNAMIC -> 1.3f   // trochę głośniej, bardziej „na twarz”
+        }
+
+        currentGain = targetGain
+        if (gainNode >= 0) {
+            AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, targetGain)
+        }
+    }
+
+    private fun applyDelayMix() {
+        if (delayNode < 0) return
+
+        if (!feedbackEnabled || currentDelayMs <= 0) {
+            // DAF wyłączony
+            AudioEngine.setParam(delayNode, DELAY_PARAM_FEEDBACK, 0f)
+            AudioEngine.setParam(delayNode, DELAY_PARAM_MIX, 0f)
+            return
+        }
+
+        // Przy włączonym DAF zawężamy zakres do 60–220 ms
+        val effectiveMs = currentDelayMs.coerceIn(60, 220)
+        AudioEngine.setParam(
+            delayNode,
+            DELAY_PARAM_TIME_MS,
+            effectiveMs.toFloat()
+        )
+
+        // Wyraźnie różne miksy:
+        //  NEUTRAL – 0.60 (to co znałeś),
+        //  SMOOTH  – 0.45, delikatniejszy odsłuch,
+        //  DYNAMIC – 0.80, mocniejszy efekt.
+        val (fb, mix) = when (currentMicPreset) {
+            MicDspPreset.NEUTRAL -> 0.0f to 0.60f
+            MicDspPreset.SMOOTH  -> 0.0f to 0.45f
+            MicDspPreset.DYNAMIC -> 0.0f to 0.80f
+        }
+
+        AudioEngine.setParam(delayNode, DELAY_PARAM_FEEDBACK, fb)
+        AudioEngine.setParam(delayNode, DELAY_PARAM_MIX, mix)
+    }
+    // ===== FAF API =====
+
+    /**
+     * Ustawia współczynnik pitch (1.0 = brak zmiany,
+     *  <1 niżej, >1 wyżej; zakres 0.8..1.2)
+     */
+    fun setFafPitchRatio(ratio: Float) {
+        val clamped = ratio.coerceIn(0.8f, 1.2f)
+        fafPitchRatio = clamped
+        if (fafNode >= 0) {
+            AudioEngine.setParam(fafNode, FAF_PARAM_PITCH_RATIO, clamped)
+        }
+    }
+
+    /**
+     * Ustawia miks FAF (0.0 = tylko normalny głos, 1.0 = tylko FAF).
+     */
+    fun setFafMix(mix: Float) {
+        val clamped = mix.coerceIn(0f, 1f)
+        fafMix = clamped
+        if (fafNode >= 0) {
+            AudioEngine.setParam(fafNode, FAF_PARAM_MIX, clamped)
+        }
+    }
+
+    fun getFafPitchRatio(): Float = fafPitchRatio
+    fun getFafMix(): Float = fafMix
+
+}
+
+===============================
+FILE: app\src\main\java\com\example\llmui\ui\daf\DafScreen.kt
+===============================
+
+package com.example.llmui.ui.daf
+
+import android.content.Context
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import com.example.llmui.audio.OboeDsp
+import kotlin.math.roundToInt
+
+// Proste presety – działają tylko na UI (ustawiają delay + gain)
+private enum class DafPreset {
+    GENTLE, STANDARD, STRONG
+}
+
+@Composable
+fun DafScreen() {
+    val context = LocalContext.current
+
+    var dafEnabled by rememberSaveable { mutableStateOf(false) }
+    var delayMs by rememberSaveable { mutableStateOf(120f) }    // 0–300, realnie 60–220 w silniku
+    var gain by rememberSaveable { mutableStateOf(1.1f) }       // 0.4–2.0
+    var currentPreset by rememberSaveable { mutableStateOf<DafPreset?>(null) }
+
+    // LED „mic level” – uproszczony: zależy od wzmocnienia i tego, czy DAF jest włączony
+    val ledLevel = if (dafEnabled) (gain / 2f).coerceIn(0f, 1f) else 0f
+
+    val ledStatusText = when {
+        !dafEnabled -> "DAF wyłączony"
+        ledLevel < 0.25f -> "Delikatny odsłuch"
+        ledLevel < 0.6f -> "Komfortowy poziom"
+        else -> "Uwaga: może być głośno"
+    }
+
+    // Sterowanie natywnym silnikiem DAF
+    LaunchedEffect(dafEnabled) {
+        try {
+            if (dafEnabled) {
+                OboeDsp.start()
+            } else {
+                // wyłączamy efekt i silnik
+                OboeDsp.setFeedbackMode(false)
+                OboeDsp.setDelayMs(0)
+                OboeDsp.setGain(1.0f)
+                OboeDsp.stop()
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    LaunchedEffect(delayMs, gain, dafEnabled) {
+        if (!dafEnabled) return@LaunchedEffect
+        try {
+            val d = delayMs.roundToInt()
+            OboeDsp.setDelayMs(d)
+            OboeDsp.setGain(gain)
+            OboeDsp.setFeedbackMode(true)
+        } catch (_: Throwable) {
+        }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // NAGŁÓWEK + MIC LEVEL
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f, fill = true),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "Tryb DAF – Delayed Auditory Feedback",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Podłącz PRZEWODOWE słuchawki do telefonu. " +
+                                "Dziecko słyszy swój głos z opóźnieniem – to pomaga „zawiesić” jąkanie.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .padding(start = 12.dp)
+                        .width(72.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = "MIC",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    MicLevelBar(
+                        level = ledLevel,
+                        modifier = Modifier
+                            .height(52.dp)
+                            .width(14.dp)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = ledStatusText,
+                        style = MaterialTheme.typography.labelSmall,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        }
+
+        // BLOK DAF – WŁĄCZNIK + OPÓŹNIENIE + GAIN + PRESETY
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+
+                // 1. Główny włącznik DAF z blokadą słuchawek
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(
+                        modifier = Modifier.weight(1f, fill = true),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "DAF – opóźniony odsłuch",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Działa tylko na słuchawkach przewodowych. " +
+                                    "Bez słuchawek nie włączysz trybu (ochrona słuchu).",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    Switch(
+                        checked = dafEnabled,
+                        onCheckedChange = { checked ->
+                            if (checked) {
+                                if (!areHeadphonesConnected(context)) {
+                                    Toast
+                                        .makeText(
+                                            context,
+                                            "Podłącz słuchawki przewodowe, żeby włączyć DAF.",
+                                            Toast.LENGTH_LONG
+                                        )
+                                        .show()
+                                } else {
+                                    dafEnabled = true
+                                }
+                            } else {
+                                dafEnabled = false
+                                currentPreset = null
+                            }
+                        }
+                    )
+                }
+
+                Divider()
+
+                // 2. Opóźnienie
+                Text(
+                    text = "Opóźnienie DAF (ms)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Najczęściej użyteczny zakres to 60–200 ms. " +
+                            "W okolicach 60–80 ms DAF działa bardzo intensywnie terapeutycznie.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Slider(
+                        value = delayMs,
+                        onValueChange = {
+                            delayMs = it
+                            currentPreset = null   // ręczne kręcenie = wychodzimy z presetów
+                        },
+                        valueRange = 0f..300f,
+                        steps = 300 / 5 - 1,
+                        modifier = Modifier.weight(1f, fill = true),
+                        enabled = dafEnabled,
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "${delayMs.roundToInt()} ms",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                Divider()
+
+                // 3. Głośność / gain
+                Text(
+                    text = "Głośność / wzmocnienie DAF",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Dopasuj tak, żeby głos dziecka był wyraźny, ale bez dyskomfortu i przesterów.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Slider(
+                        value = gain,
+                        onValueChange = {
+                            gain = it
+                            currentPreset = null
+                        },
+                        valueRange = 0.4f..2.0f,
+                        steps = 8,
+                        modifier = Modifier.weight(1f, fill = true),
+                        enabled = dafEnabled,
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = String.format("%.1f×", gain),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+
+                Divider()
+
+                // 4. Presety DAF
+                Text(
+                    text = "Presety DAF",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "Gotowe kombinacje opóźnienia i głośności. " +
+                            "Działają tylko gdy DAF jest włączony.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+
+                DafPresetButton(
+                    label = "Łagodny (ok. 70 ms)",
+                    description = "Miękki efekt, dobry na start.",
+                    selected = currentPreset == DafPreset.GENTLE,
+                    enabled = dafEnabled,
+                    onClick = {
+                        if (!dafEnabled) {
+                            Toast.makeText(
+                                context,
+                                "Najpierw włącz DAF przełącznikiem powyżej.",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            delayMs = 70f
+                            gain = 0.9f
+                            currentPreset = DafPreset.GENTLE
+                        }
+                    }
+                )
+
+                DafPresetButton(
+                    label = "Standard (ok. 120 ms)",
+                    description = "Mocny efekt terapeutyczny, codzienne ćwiczenia.",
+                    selected = currentPreset == DafPreset.STANDARD,
+                    enabled = dafEnabled,
+                    onClick = {
+                        if (!dafEnabled) {
+                            Toast.makeText(
+                                context,
+                                "Najpierw włącz DAF przełącznikiem powyżej.",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            delayMs = 120f
+                            gain = 1.1f
+                            currentPreset = DafPreset.STANDARD
+                        }
+                    }
+                )
+
+                DafPresetButton(
+                    label = "Mocny (ok. 170 ms)",
+                    description = "Najsilniejsze „zawieszenie” jąkania, krótkie sesje.",
+                    selected = currentPreset == DafPreset.STRONG,
+                    enabled = dafEnabled,
+                    onClick = {
+                        if (!dafEnabled) {
+                            Toast.makeText(
+                                context,
+                                "Najpierw włącz DAF przełącznikiem powyżej.",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            delayMs = 170f
+                            gain = 1.3f
+                            currentPreset = DafPreset.STRONG
+                        }
+                    }
+                )
+            }
+        }
+
+        // Krótki box z tipami
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Jak używać DAF?",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Text(
+                    text = "• Zacznij od presetów: Standard lub Łagodny.\n" +
+                            "• Ćwiczenia rób krótko, ale regularnie (kilka minut, kilka razy dziennie).\n" +
+                            "• Jeśli dziecko się męczy – zmniejsz głośność albo wyłącz DAF na chwilę.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Sprawdza, czy są podłączone przewodowe słuchawki / headset.
+ */
+private fun areHeadphonesConnected(context: Context): Boolean {
+    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+    val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+    return devices.any { info ->
+        info.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                info.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES
+    }
+}
+
+/**
+ * Prosty pionowy LED bar – kilka segmentów „świeci” w zależności od level 0..1.
+ */
+@Composable
+private fun MicLevelBar(
+    level: Float,
+    modifier: Modifier = Modifier
+) {
+    val norm = level.coerceIn(0f, 1f)
+    val segments = 6
+
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        for (i in (segments - 1) downTo 0) {
+            val threshold = (i + 1).toFloat() / segments.toFloat()
+            val isActive = norm >= threshold
+
+            val color = when {
+                !isActive -> MaterialTheme.colorScheme.surface.copy(alpha = 0.4f)
+                norm < 0.25f -> MaterialTheme.colorScheme.secondary
+                norm < 0.6f -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.error
+            }
+
+            Box(
+                modifier = Modifier
+                    .width(14.dp)
+                    .height(6.dp)
+                    .background(
+                        color = color,
+                        shape = RoundedCornerShape(3.dp)
+                    )
+            )
+        }
+    }
+}
+
+/**
+ * Jeden przycisk presetu – pełna szerokość, opis + zaznaczenie aktywnego.
+ */
+@Composable
+private fun DafPresetButton(
+    label: String,
+    description: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+        colors = if (selected) {
+            ButtonDefaults.buttonColors()
+        } else {
+            ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    ) {
+        Column(
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = if (selected) "$label  ✓" else label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+}
+
+===============================
+FILE: app\src\main\java\com\example\llmui\ui\faf\FafScreen.kt
+===============================
+
+package com.example.llmui.ui.faf
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+
+@Composable
+fun FafScreen() {
+    Scaffold { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(16.dp)
+        ) {
+            Text(
+                text = "FAF (Frequency Altered Feedback)",
+                style = MaterialTheme.typography.titleLarge
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "Ta zakładka jest przygotowana pod FAF.\n" +
+                        "Obecnie główna terapia działa przez DAF w osobnej zakładce."
+            )
+        }
+    }
+}
+

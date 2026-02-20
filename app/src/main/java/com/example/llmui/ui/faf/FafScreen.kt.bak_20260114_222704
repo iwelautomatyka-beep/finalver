@@ -1,0 +1,189 @@
+﻿package com.example.llmui.ui.faf
+
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.example.llmui.audio.OboeDsp
+import kotlin.math.roundToInt
+
+@Composable
+fun FafScreen() {
+    var fafEnabled by rememberSaveable { mutableStateOf(false) }
+    var pitchRatio by rememberSaveable { mutableStateOf(1.0f) } // 1.0 = brak zmiany
+    var mix by rememberSaveable { mutableStateOf(0.7f) }        // 0 = brak FAF, 1 = tylko FAF
+
+    // start/stop FAF w silniku
+    LaunchedEffect(fafEnabled) {
+        try {
+            if (fafEnabled) {
+                // Startujemy ten sam silnik co DAF,
+                // ale DAF wyłączamy (zero opóźnienia i feedbacku)
+                OboeDsp.start()
+                OboeDsp.setFeedbackMode(false)
+                OboeDsp.setDelayMs(0)
+                OboeDsp.setFafPitchRatio(pitchRatio)
+                OboeDsp.setFafMix(mix)
+            } else {
+                // Wyłączamy sam efekt FAF – miks na 0.
+                // Silnika nie stopujemy, żeby nie przeszkadzać DAF w innej zakładce.
+                OboeDsp.setFafMix(0f)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    // Aktualizacja parametrów gdy kręcisz suwakami
+    LaunchedEffect(pitchRatio, mix, fafEnabled) {
+        if (!fafEnabled) return@LaunchedEffect
+        try {
+            OboeDsp.setFafPitchRatio(pitchRatio)
+            OboeDsp.setFafMix(mix)
+        } catch (_: Throwable) {
+        }
+    }
+
+    Scaffold { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(16.dp),
+            horizontalAlignment = Alignment.Start
+        ) {
+            Text(
+                text = "FAF – Frequency Altered Feedback",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "FAF zmienia wysokość (częstotliwość) Twojego głosu. " +
+                        "Działa na tym samym silniku co DAF, ale zamiast opóźnienia używa zmiany pitch.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(12.dp)
+                ) {
+                    // Włącznik FAF
+                    Text(
+                        text = "Włącz FAF",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Switch(
+                        checked = fafEnabled,
+                        onCheckedChange = { checked ->
+                            fafEnabled = checked
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Pitch
+                    Text(
+                        text = "Zmiana wysokości głosu",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "Zakres ok. −20% do +20%. Delikatne odstrojenie jest zwykle najbardziej użyteczne.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Slider(
+                        value = pitchRatio,
+                        onValueChange = { pitchRatio = it },
+                        valueRange = 0.8f..1.2f,
+                        steps = 8,
+                        enabled = fafEnabled,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                    val pitchPercent = ((pitchRatio - 1f) * 100f).roundToInt()
+                    Text(
+                        text = if (pitchPercent >= 0)
+                            "Pitch: +${pitchPercent}%"
+                        else
+                            "Pitch: ${pitchPercent}%",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Mix
+                    Text(
+                        text = "Miks FAF",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = "0% = tylko normalny głos, 100% = tylko głos z efektem FAF.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Slider(
+                        value = mix,
+                        onValueChange = { mix = it },
+                        valueRange = 0f..1f,
+                        steps = 9,
+                        enabled = fafEnabled,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = SliderDefaults.colors(
+                            thumbColor = MaterialTheme.colorScheme.primary,
+                            activeTrackColor = MaterialTheme.colorScheme.primary
+                        )
+                    )
+                    Text(
+                        text = "Miks FAF: ${(mix * 100f).roundToInt()}%",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text(
+                text = "Uwaga: nie używaj DAF i FAF jednocześnie – traktuj je jako osobne tryby pracy.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+}

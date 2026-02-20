@@ -1,0 +1,97 @@
+﻿            // FAF pitch node (true FAF)
+            fafNode = AudioEngine.addNode("faf_pitch")
+            if (fafNode >= 0) {
+                // TEST: wymuś bardzo mocny FAF od razu po starcie
+                fafPitchRatio = 1.5f
+                fafMix = 1.0f
+                AudioEngine.setParam(fafNode, FAF_PARAM_PITCH_RATIO, fafPitchRatio)
+                AudioEngine.setParam(fafNode, FAF_PARAM_MIX, fafMix)
+            } else {
+                android.util.Log.w("FAF", "addNode(\"faf_pitch\") zwróciło $fafNode")
+            }
+
+            started = true'@
+
+if ($content -notmatch 'addNode\("faf_pitch"\)') {
+    Write-Host "Uwaga: w pliku nie znalazłem bloku FAF, nic nie podmieniam."
+} else {
+    $content = [System.Text.RegularExpressions.Regex]::Replace(
+        $content, $pattern, $replacement
+    )
+}
+
+Set-Content $oboeKt $content -Encoding UTF8
+Write-Host "Zapisano zmodyfikowany OboeDsp.kt"
+
+# ----- Build + install + start -----
+Write-Host "== Buduję APK =="
+.\gradlew.bat :app:assembleDebug
+if ($LASTEXITCODE -ne 0) { throw "Gradle nie zbudował APK – zobacz błędy wyżej." }
+
+Write-Host "== Instaluję na urządzeniu =="
+adb install -r app\build\outputs\apk\debug\app-debug.apk
+
+Write-Host "== Startuję apkę =="
+adb shell am start -n com.example.llmui/.MainActivity
+
+Write-Host ""
+Write-Host "Gotowe. Wejdź w zakładkę FAF, włącz przełącznik."
+Write-Host "Przy takim ustawieniu (pitch 1.5x, mix 100%) głos powinien być BARDZO wysoki."
+Write-Host "Jeśli nadal jest zupełnie suchy, zrób logcat i poszukaj linii z tagiem 'FAF'."
+$ErrorActionPreference = "Stop"
+$projectRoot = "C:\Users\Janek\Desktop\FluencyCoach"
+Set-Location $projectRoot
+
+# ŚCIEŻKI
+$fafH   = "app\src\main\cpp\faf_pitch_node.h"
+$fafCpp = "app\src\main\cpp\faf_pitch_node.cpp"
+$audio  = "app\src\main\cpp\audio_engine.cpp"
+
+# === BACKUPY ===
+foreach ($p in @($fafH, $fafCpp, $audio)) {
+    if (Test-Path $p) {
+        $b = "$p.bak_faf_{0}" -f (Get-Date -Format "yyyyMMdd_HHmmss")
+        Copy-Item $p $b -Force
+        Write-Host "Backup -> $b"
+    } else {
+        Write-Host "Uwaga: nie znalazłem $p (pominę nadpisywanie tego pliku)."
+    }
+}
+
+# === NOWY faf_pitch_node.h ===
+@'
+#pragma once
+
+#include "audio_engine.h"
+#include <vector>
+#include <cstdint>
+#include <algorithm>
+
+class FafPitchNode : public DspNode {
+public:
+    enum ParamId {
+        PARAM_PITCH_RATIO = 0, // 1.0 = brak zmiany
+        PARAM_MIX         = 1  // 0.0 = dry, 1.0 = tylko FAF
+    };
+
+    FafPitchNode() = default;
+    ~FafPitchNode() override = default;
+
+    void prepare(const DspContext& ctx) override;
+    void setParam(int id, float value) override;
+    void process(float* interleaved, int32_t frames) override;
+
+private:
+    int   sampleRate = 48000;
+    int   channels   = 1;
+
+    float pitchRatio = 1.0f;
+    float mix        = 0.0f;
+
+    std::vector<float> ring;
+    int32_t ringFrames = 0;
+    int32_t ringWrite  = 0;
+    float   ringRead   = 0.0f;
+
+    void allocateRing();
+};
