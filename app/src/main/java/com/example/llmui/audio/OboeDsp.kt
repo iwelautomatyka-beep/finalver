@@ -14,6 +14,8 @@ object OboeDsp {
     private const val TAG = "AudioEngine"
 
     private const val GAIN_PARAM_GAIN = 0
+    private const val NOISE_PARAM_THRESHOLD = 0
+    private const val NOISE_PARAM_ATTENUATION = 1
 
     private const val DELAY_PARAM_TIME_MS = 0
     private const val DELAY_PARAM_FEEDBACK = 1
@@ -27,8 +29,10 @@ object OboeDsp {
     private var gainNode = -1
     private var delayNode = -1
     private var fafNode = -1
+    private var noiseGateNode = -1
 
     private var currentGain = 1.0f
+    private var globalGain = 1.0f
     private var currentDelayMs = 0
     private var feedbackEnabled = false
 
@@ -36,6 +40,8 @@ object OboeDsp {
 
     private var fafPitchRatio = 1.0f
     private var fafMix = 0.0f
+    private var noiseSuppressionEnabled = false
+    private var preferredInputDeviceId = -1
 
     // ========== LIFECYCLE ==========
 
@@ -47,17 +53,23 @@ object OboeDsp {
 
         return try {
             Log.i(TAG, "OboeDsp.start(): AudioEngine.start() + clearChain()")
+            AudioEngine.setPreferredInputDeviceId(preferredInputDeviceId)
             AudioEngine.start()
             AudioEngine.clearChain()
 
             gainNode = AudioEngine.addNode("gain")
+            noiseGateNode = AudioEngine.addNode("noise_gate")
             delayNode = AudioEngine.addNode("delay")
             fafNode   = AudioEngine.addNode("faf_pitch")
 
-            Log.i(TAG, "OboeDsp.start(): chain created -> gainNode=$gainNode delayNode=$delayNode fafNode=$fafNode")
+            Log.i(TAG, "OboeDsp.start(): chain created -> gainNode=$gainNode noiseGateNode=$noiseGateNode delayNode=$delayNode fafNode=$fafNode")
 
             if (gainNode >= 0) {
-                AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, currentGain)
+                applyCombinedGain()
+            }
+
+            if (noiseGateNode >= 0) {
+                applyNoiseSuppression()
             }
 
             if (delayNode >= 0) {
@@ -90,6 +102,7 @@ object OboeDsp {
         } finally {
             started = false
             gainNode = -1
+            noiseGateNode = -1
             delayNode = -1
             fafNode = -1
         }
@@ -117,8 +130,41 @@ object OboeDsp {
         val clamped = g.coerceIn(0f, 2f)
         currentGain = clamped
         Log.i(TAG, "OboeDsp.setGain($g) -> $clamped, gainNode=$gainNode")
+        applyCombinedGain()
+    }
+
+    fun setGlobalGain(g: Float) {
+        globalGain = g.coerceIn(0.5f, 2.0f)
+        applyCombinedGain()
+    }
+
+    fun getGlobalGain(): Float = globalGain
+
+    fun setNoiseSuppressionEnabled(enabled: Boolean) {
+        noiseSuppressionEnabled = enabled
+        applyNoiseSuppression()
+    }
+
+    fun isNoiseSuppressionEnabled(): Boolean = noiseSuppressionEnabled
+
+    fun getMicInputLevel(): Float = AudioEngine.getInputLevel().coerceIn(0f, 1f)
+
+    fun setPreferredInputDeviceId(deviceId: Int) {
+        if (preferredInputDeviceId == deviceId) return
+        preferredInputDeviceId = deviceId
+        AudioEngine.setPreferredInputDeviceId(deviceId)
+        if (started) {
+            stop()
+            start()
+        }
+    }
+
+    fun getPreferredInputDeviceId(): Int = preferredInputDeviceId
+
+    private fun applyCombinedGain() {
+        val effective = (currentGain * globalGain).coerceIn(0f, 3f)
         if (gainNode >= 0) {
-            AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, clamped)
+            AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, effective)
         }
     }
 
@@ -181,8 +227,17 @@ object OboeDsp {
 
         currentGain = targetGain
         Log.i(TAG, "OboeDsp.applyMicPresetGain() -> $targetGain, gainNode=$gainNode")
-        if (gainNode >= 0) {
-            AudioEngine.setParam(gainNode, GAIN_PARAM_GAIN, targetGain)
+        applyCombinedGain()
+    }
+
+    private fun applyNoiseSuppression() {
+        if (noiseGateNode < 0) return
+        if (noiseSuppressionEnabled) {
+            AudioEngine.setParam(noiseGateNode, NOISE_PARAM_THRESHOLD, 0.035f)
+            AudioEngine.setParam(noiseGateNode, NOISE_PARAM_ATTENUATION, 0.10f)
+        } else {
+            AudioEngine.setParam(noiseGateNode, NOISE_PARAM_THRESHOLD, 0.0f)
+            AudioEngine.setParam(noiseGateNode, NOISE_PARAM_ATTENUATION, 1.0f)
         }
     }
 

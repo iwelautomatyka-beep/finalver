@@ -9,4 +9,6 @@ object AudioEngine {
     external fun clearChain()
     external fun addNode(type: String): Int
     external fun setParam(nodeIndex: Int, paramId: Int, value: Float)
+    external fun getInputLevel(): Float
+    external fun setPreferredInputDeviceId(deviceId: Int)
 }

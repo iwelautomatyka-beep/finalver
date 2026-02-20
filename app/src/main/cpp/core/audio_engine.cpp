@@ -1,10 +1,12 @@
-﻿#include "audio_engine.h"
+#include "audio_engine.h"
 #include "../faf_pitch_node.h"
+#include "../dsp/noise_gate.h"
 #include <thread>
 #include <chrono>
 
 AudioEngineImpl::AudioEngineImpl() {
     registry.registerFactory("gain", []{ return std::make_unique<GainNode>(); });
+    registry.registerFactory("noise_gate", []{ return std::make_unique<NoiseGateNode>(); });
     registry.registerFactory("delay", []{ return std::make_unique<DelayNode>(); });
     registry.registerFactory("faf_pitch", []{ return std::make_unique<FafPitchNode>(); });
 }
@@ -22,7 +24,7 @@ bool AudioEngineImpl::start() {
     if (state.load() != EngineState::Stopped) return true;
     state.store(EngineState::Starting);
 
-    inputCb = std::make_unique<InputCallback>(ring);
+    inputCb = std::make_unique<InputCallback>(ring, inputLevel);
 
     inErrCb  = std::make_unique<StreamErrorCallback>([this]{ restartAsync(); });
     outErrCb = std::make_unique<StreamErrorCallback>([this]{ restartAsync(); });
@@ -34,6 +36,9 @@ bool AudioEngineImpl::start() {
     inB.setChannelCount(params.channels.load());
     inB.setFormat(oboe::AudioFormat::Float);
     inB.setInputPreset(oboe::InputPreset::VoiceRecognition);
+    if (preferredInputDeviceId.load() > 0) {
+        inB.setDeviceId(preferredInputDeviceId.load());
+    }
     inB.setCallback(inputCb.get());
     inB.setErrorCallback(inErrCb.get());
 
@@ -138,6 +143,14 @@ void AudioEngineImpl::setParam(int index, int paramId, float value) {
     if (n) n->setParam(paramId, value);
 }
 
+float AudioEngineImpl::getInputLevel() const {
+    return inputLevel.load();
+}
+
+void AudioEngineImpl::setPreferredInputDeviceId(int32_t deviceId) {
+    preferredInputDeviceId.store(deviceId);
+}
+
 // C linkage for JNI
 static AudioEngineImpl g;
 extern "C" {
@@ -146,4 +159,6 @@ extern "C" {
     void engine_clear_chain() { g.clearChain(); }
     int  engine_add_node(const char* type) { return g.addNode(type); }
     void engine_set_param(int index, int paramId, float value) { g.setParam(index, paramId, value); }
+    float engine_get_input_level() { return g.getInputLevel(); }
+    void engine_set_preferred_input_device_id(int32_t deviceId) { g.setPreferredInputDeviceId(deviceId); }
 }
